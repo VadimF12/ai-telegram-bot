@@ -140,7 +140,7 @@ std::string askGemini(const std::vector<Message>& conversation, const std::strin
 
     if (!curl) return "Слушай, что-то связи нет...";
 
-    std::string url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey;
+    std::string url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flashgit add main.cpp:generateContent?key=" + apiKey;
 
     json payload;
 
