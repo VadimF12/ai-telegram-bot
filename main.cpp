@@ -3,16 +3,13 @@
 #include <vector>
 #include <thread>
 #include <chrono>
+#include <cstdlib>
 #include <sqlite3.h>
 #include <tgbot/tgbot.h>
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
-
-// --- НАСТРОЙКИ ---
-const std::string GEMINI_API_KEY = "AQ.Ab8RN6Lv5hqB1DqLA1xZCes4yWpF_xvzHD0GoVLpT71NNp-vng";
-const std::string BOT_TOKEN = "8840387186:AAH4kEUpo6KV7vjU9synvf2e2cxgJ-2ChB0";
 
 // Системная инструкция (личность бота)
 const std::string SYSTEM_PROMPT =
@@ -137,21 +134,18 @@ size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
     return size * nmemb;
 }
 
-std::string askGemini(const std::vector<Message>& conversation) {
+std::string askGemini(const std::vector<Message>& conversation, const std::string& apiKey) {
     CURL* curl = curl_easy_init();
     std::string readBuffer;
 
     if (!curl) return "Слушай, что-то связи нет...";
 
-    // Используем актуальную модель gemini-3.6-flash
-    std::string url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=" + GEMINI_API_KEY;
+    std::string url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey;
 
     json payload;
 
-    // Корректный формат системного промпта для Gemini API
     payload["system_instruction"]["parts"] = json::array({ {{"text", SYSTEM_PROMPT}} });
 
-    // Собираем историю диалога в формате Gemini
     json contents = json::array();
     for (const auto& msg : conversation) {
         json item;
@@ -198,20 +192,34 @@ std::string askGemini(const std::vector<Message>& conversation) {
 }
 
 int main() {
+    // 1. Считывание ключей из переменных окружения
+    const char* tgTokenEnv = std::getenv("TELEGRAM_BOT_TOKEN");
+    if (!tgTokenEnv) {
+        std::cerr << "Ошибка: Переменная окружения TELEGRAM_BOT_TOKEN не задана!" << std::endl;
+        return 1;
+    }
+    std::string botToken = tgTokenEnv;
+
+    const char* geminiKeyEnv = std::getenv("GEMINI_API_KEY");
+    if (!geminiKeyEnv) {
+        std::cerr << "Ошибка: Переменная окружения GEMINI_API_KEY не задана!" << std::endl;
+        return 1;
+    }
+    std::string geminiApiKey = geminiKeyEnv;
+
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
-    TgBot::Bot bot(BOT_TOKEN);
+    TgBot::Bot bot(botToken);
     MemoryManager memory("bot_memory.db");
 
-    bot.getEvents().onAnyMessage([&bot, &memory](TgBot::Message::Ptr message) {
+    bot.getEvents().onAnyMessage([&bot, &memory, &geminiApiKey](TgBot::Message::Ptr message) {
         int64_t chatId = message->chat->id;
         std::string userText = "";
 
-        // Определяем тип входящего сообщения
         if (message->text.has_value() && !message->text->empty()) {
             userText = message->text.value();
         }
-        else if (!message->photo.has_value() && message->photo->empty()) {
+        else if (message->photo.has_value() && !message->photo->empty()) {
             std::string caption = message->caption.has_value() ? message->caption.value() : "";
             userText = caption.empty() ? "[Пользователь прислал тебе фото]" : "[Пользователь прислал фото с подписью: " + caption + "]";
         }
@@ -224,22 +232,14 @@ int main() {
 
         std::cout << "[" << chatId << "] Пользователь: " << userText << std::endl;
 
-        // 1. Показываем статус "typing" (печатает...)
         bot.getApi().sendChatAction(chatId, "typing");
-
-        // 2. Сохраняем сообщение пользователя в память
         memory.addMessage(chatId, "user", userText);
 
-        // 3. Запрашиваем ответ у Gemini
-        std::string aiResponse = askGemini(memory.getHistory(chatId));
+        std::string aiResponse = askGemini(memory.getHistory(chatId), geminiApiKey);
 
-        // 4. Пауза для эмуляции набора текста человеком
         std::this_thread::sleep_for(std::chrono::milliseconds(1500));
 
-        // 5. Сохраняем ответ ИИ в память
         memory.addMessage(chatId, "model", aiResponse);
-
-        // 6. Отправляем ответ пользователю
         bot.getApi().sendMessage(chatId, aiResponse);
         std::cout << "[" << chatId << "] Бот: " << aiResponse << std::endl;
     });
