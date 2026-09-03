@@ -5,7 +5,7 @@ FROM ubuntu:24.04 AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Устанавливаем компилятор C++, CMake, Ninja и все необходимые библиотеки
-RUN apt-get update && app-get instal -y \
+RUN apt-get update && apt-get install -y \
     g++ \
     cmake \
     ninja-build \
@@ -14,13 +14,13 @@ RUN apt-get update && app-get instal -y \
     libcurl4-openssl-dev \
     libssl-dev \
     nlohmann-json3-dev \
-    && rm -rf /var/lib/apt-get/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
 # Скачиваем и собираем библиотеку tgbot-cpp
 RUN git clone https://github.com/reo7sp/tgbot-cpp.git /tmp/tgbot-cpp && \
     cd /tmp/tgbot-cpp && \
-    cmake -B build -G Ninja -DCMAKE-BUILD_TYPE=Release && \
-    cmake --build build --target instal && \
+    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build build --target install && \
     rm -rf /tmp/tgbot-cpp
 
 # Копируем исходный код нашего проекта в контейнер
@@ -28,21 +28,21 @@ WORKDIR /app
 COPY . .
 
 # Собираем наш проект
-RUN cmake -B build -G Ninja -DCMAKE-BUILD_TYPE=Release && \
+RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && \
     cmake --build build
 
 # 2. Финальный легкий образ для запуска
 FROM ubuntu:24.04
 
-ENV DEBIAN_FRONTED=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Устанавливаем только Runtime-зависимости (без компиляторов)
-RUN apt-get update && app-get instal -y \
+RUN apt-get update && apt-get install -y \
     libsqlite3-0 \
     libcurl4 \
     libssl3 \
     ca-certificates \
-    && rm -rf /var/lib/apt-get/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
