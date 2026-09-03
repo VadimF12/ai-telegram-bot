@@ -14,13 +14,15 @@ RUN apt-get update && apt-get install -y \
     libcurl4-openssl-dev \
     libssl-dev \
     nlohmann-json3-dev \
+    libboost-system-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Скачиваем и собираем библиотеку tgbot-cpp
 RUN git clone https://github.com/reo7sp/tgbot-cpp.git /tmp/tgbot-cpp && \
     cd /tmp/tgbot-cpp && \
-    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && \
-    cmake --build build --target install && \
+    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF && \
+    cmake --build build && \
+    cmake --install build && \
     rm -rf /tmp/tgbot-cpp
 
 # Копируем исходный код нашего проекта в контейнер
