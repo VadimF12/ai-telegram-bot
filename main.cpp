@@ -11,6 +11,36 @@
 
 using json = nlohmann::json;
 
+// Простой фейковый HTTP-сервер для Health Check от Render
+void startDummyHttpServer() {
+    std::thread([]() {
+        int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (server_fd < 0) return;
+
+        int opt = 1;
+        setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = INADDR_ANY;
+        // Берём порт из переменной окружения PORT (по умолчанию 10000)
+        const char* portStr = std::getenv("PORT");
+        int port = portStr ? std::stoi(portStr) : 10000;
+        address.sin_port = htons(port);
+
+        if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) return;
+        if (listen(server_fd, 3) < 0) return;
+
+        while (true) {
+            int new_socket = accept(server_fd, nullptr, nullptr);
+            if (new_socket >= 0) {
+                std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK";
+                send(new_socket, response.c_str(), response.size(), 0);
+                close(new_socket);
+            }
+        }
+    }).detach();
+}
 // Системная инструкция (личность бота)
 const std::string SYSTEM_PROMPT =
     "Ты — реальная девушка, общающаяся в Telegram. Тебя зовут Ай. "
@@ -201,6 +231,8 @@ std::string askGemini(const std::vector<Message>& conversation, const std::strin
 }
 
 int main() {
+    startDummyHttpServer(); // Запускаем фоновый ответчик на порт Render
+
     // 1. Считывание ключей из переменных окружения
     const char* tgTokenEnv = std::getenv("TELEGRAM_BOT_TOKEN");
     if (!tgTokenEnv) {
