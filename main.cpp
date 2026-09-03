@@ -140,7 +140,8 @@ std::string askGemini(const std::vector<Message>& conversation, const std::strin
 
     if (!curl) return "Слушай, что-то связи нет...";
 
-    std::string url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flashgit add main.cpp:generateContent?key=" + apiKey;
+    // Исправленный URL
+    std::string url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=" + apiKey;
 
     json payload;
 
@@ -166,13 +167,21 @@ std::string askGemini(const std::vector<Message>& conversation, const std::strin
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
 
+    // Таймауты
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+
     CURLcode res = curl_easy_perform(curl);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
 
     if (res != CURLE_OK) {
+        std::cerr << "[cURL Error] " << curl_easy_strerror(res) << std::endl;
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
         return "Блин, инет лагает, не могу ответить...";
     }
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
 
     try {
         auto responseJson = json::parse(readBuffer);
