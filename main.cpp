@@ -23,24 +23,45 @@ void startDummyHttpServer() {
         sockaddr_in address{};
         address.sin_family = AF_INET;
         address.sin_addr.s_addr = INADDR_ANY;
-        // Берём порт из переменной окружения PORT (по умолчанию 10000)
+
+        // Render передаёт порт через переменную окружения PORT
         const char* portStr = std::getenv("PORT");
         int port = portStr ? std::stoi(portStr) : 10000;
         address.sin_port = htons(port);
 
-        if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) return;
-        if (listen(server_fd, 3) < 0) return;
+        if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
+            close(server_fd);
+            return;
+        }
+
+        if (listen(server_fd, 10) < 0) {
+            close(server_fd);
+            return;
+        }
+
+        std::cout << "[HTTP] Dummy server running on port " << port << std::endl;
 
         while (true) {
             int new_socket = accept(server_fd, nullptr, nullptr);
             if (new_socket >= 0) {
-                std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK";
+                char buffer[1024] = {0};
+                read(new_socket, buffer, sizeof(buffer) - 1);
+
+                // Отправляем полноценный HTTP 200 OK ответ
+                std::string response =
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: text/plain\r\n"
+                    "Content-Length: 2\r\n"
+                    "Connection: close\r\n\r\n"
+                    "OK";
+
                 send(new_socket, response.c_str(), response.size(), 0);
                 close(new_socket);
             }
         }
     }).detach();
 }
+
 // Системная инструкция (личность бота)
 const std::string SYSTEM_PROMPT =
     "Ты — реальная девушка, общающаяся в Telegram. Тебя зовут Ай. "
