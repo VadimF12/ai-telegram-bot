@@ -180,93 +180,84 @@ private:
     }
 };
 
-// --- HTTP КЛИЕНТ DLYA GEMINI API С ПОВТОРАМИ И УВЕЛИЧЕННЫМ ТАЙМАУТОМ ---
+// --- HTTP КЛИЕНТ ДЛЯ GROQ API ---
 size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
     ((std::string*)userp)->append((char*)contents, size * nmemb);
     return size * nmemb;
 }
 
-std::string askGemini(const std::vector<Message>& conversation, const std::string& apiKey) {
-    std::vector<std::string> models = {"gemini-3.6-flash", "gemini-3.6-flash-lite"};
+std::string askGroq(const std::vector<Message>& conversation, const std::string& apiKey) {
+    std::string url = "https://api.groq.com/openai/v1/chat/completions";
 
-    for (const auto& modelName : models) {
-        std::string url = "https://generativelanguage.googleapis.com/v1beta/models/" + modelName + ":generateContent?key=" + apiKey;
+    json payload;
+    payload["model"] = "llama-3.3-70b-versatile";
 
-        json payload;
-        payload["system_instruction"]["parts"] = json::array({ {{"text", SYSTEM_PROMPT}} });
+    json messages = json::array();
 
-        json contents = json::array();
-        for (const auto& msg : conversation) {
-            json item;
-            item["role"] = msg.role;
-            item["parts"] = json::array({ {{"text", msg.text}} });
-            contents.push_back(item);
-        }
-        payload["contents"] = contents;
+    // Системный промпт
+    messages.push_back({
+        {"role", "system"},
+        {"content", SYSTEM_PROMPT}
+    });
 
-        std::string jsonStr = payload.dump();
+    // История диалога
+    for (const auto& msg : conversation) {
+        // Кастомное сопоставление ролей под OpenAI формат (assistant вместо model)
+        std::string roleName = (msg.role == "model" || msg.role == "assistant") ? "assistant" : "user";
+        messages.push_back({
+            {"role", roleName},
+            {"content", msg.text}
+        });
+    }
+    payload["messages"] = messages;
+    payload["temperature"] = 0.7;
 
-        int maxRetries = 2;
-        for (int attempt = 1; attempt <= maxRetries; ++attempt) {
-            CURL* curl = curl_easy_init();
-            if (!curl) continue;
+    std::string jsonStr = payload.dump();
 
-            std::string readBuffer;
-            struct curl_slist* headers = NULL;
-            headers = curl_slist_append(headers, "Content-Type: application/json");
+    CURL* curl = curl_easy_init();
+    if (!curl) return "Ой, что-то со связью...";
 
-            curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, jsonStr.c_str());
-            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+    std::string readBuffer;
+    struct curl_slist* headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    std::string authHeader = "Authorization: Bearer " + apiKey;
+    headers = curl_slist_append(headers, authHeader.c_str());
 
-            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-            curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, jsonStr.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
 
-            CURLcode res = curl_easy_perform(curl);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
 
-            if (res == CURLE_OK) {
-                curl_slist_free_all(headers);
-                curl_easy_cleanup(curl);
+    CURLcode res = curl_easy_perform(curl);
 
-                try {
-                    auto responseJson = json::parse(readBuffer);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
 
-                    if (responseJson.contains("error")) {
-                        int errCode = responseJson["error"].value("code", 0);
-                        std::string errStatus = responseJson["error"].value("status", "");
+    if (res == CURLE_OK) {
+        try {
+            auto responseJson = json::parse(readBuffer);
 
-                        std::cerr << "[Gemini Error on " << modelName << "]: " << readBuffer << std::endl;
+            if (responseJson.contains("choices") &&
+                !responseJson["choices"].empty() &&
+                responseJson["choices"][0].contains("message") &&
+                responseJson["choices"][0]["message"].contains("content")) {
 
-                        if (errCode == 429 || errStatus == "RESOURCE_EXHAUSTED") {
-                            std::cerr << "[Quota Exhausted] Переключаемся на резервную модель..." << std::endl;
-                            break;
-                        }
-
-                        return "Ой, что-то голова раскалывается...";
-                    }
-
-                    if (responseJson.contains("candidates") &&
-                        !responseJson["candidates"].empty() &&
-                        responseJson["candidates"][0].contains("content") &&
-                        !responseJson["candidates"][0]["content"]["parts"].empty()) {
-
-                        return responseJson["candidates"][0]["content"]["parts"][0]["text"].get<std::string>();
-                    }
-                } catch (const std::exception& e) {
-                    std::cerr << "[JSON Parse Error]: " << e.what() << std::endl;
-                }
-                return "Ммм, задумалась что-то...";
+                return responseJson["choices"][0]["message"]["content"].get<std::string>();
+            } else {
+                std::cerr << "[Groq API Response Error]: " << readBuffer << std::endl;
             }
-
-            curl_slist_free_all(headers);
-            curl_easy_cleanup(curl);
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        } catch (const std::exception& e) {
+            std::cerr << "[JSON Parse Error]: " << e.what() << std::endl;
         }
+    } else {
+        std::cerr << "[CURL Error]: " << curl_easy_strerror(res) << std::endl;
     }
 
-    return "Слушай, я что-то устала немного, давай через минут десять списаемся?";
+    return "Ой, что-то голова раскалывается...";
 }
 
 int main() {
@@ -279,19 +270,19 @@ int main() {
     }
     std::string botToken = tgTokenEnv;
 
-    const char* geminiKeyEnv = std::getenv("GEMINI_API_KEY");
-    if (!geminiKeyEnv) {
-        std::cerr << "Ошибка: Переменная окружения GEMINI_API_KEY не задана!" << std::endl;
+    const char* groqKeyEnv = std::getenv("GROQ_API_KEY");
+    if (!groqKeyEnv) {
+        std::cerr << "Ошибка: Переменная окружения GROQ_API_KEY не задана!" << std::endl;
         return 1;
     }
-    std::string geminiApiKey = geminiKeyEnv;
+    std::string groqApiKey = groqKeyEnv;
 
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
     TgBot::Bot bot(botToken);
     MemoryManager memory("bot_memory.db");
 
-    // 1. Сбрасываем вебхуки и активные соединения Telegram
+    // 1. Сброс вебхуков
     try {
         bot.getApi().deleteWebhook(true);
         std::cout << "[Telegram] Сброс вебхуков выполнен успешно." << std::endl;
@@ -299,11 +290,11 @@ int main() {
         std::cerr << "Webhook reset warning: " << e.what() << std::endl;
     }
 
-    // 2. Обязательная задержка в 5 секунд для разрыва старой сессии на Render
+    // 2. Задержка для смены процессов на Render
     std::cout << "[System] Пауза 5 секунд перед стартом поллинга..." << std::endl;
     std::this_thread::sleep_for(std::chrono::seconds(5));
 
-    bot.getEvents().onAnyMessage([&bot, &memory, &geminiApiKey](TgBot::Message::Ptr message) {
+    bot.getEvents().onAnyMessage([&bot, &memory, &groqApiKey](TgBot::Message::Ptr message) {
         int64_t chatId = message->chat->id;
         std::string userText = "";
 
@@ -326,15 +317,15 @@ int main() {
         bot.getApi().sendChatAction(chatId, "typing");
         memory.addMessage(chatId, "user", userText);
 
-        std::string aiResponse = askGemini(memory.getHistory(chatId), geminiApiKey);
+        std::string aiResponse = askGroq(memory.getHistory(chatId), groqApiKey);
 
-        memory.addMessage(chatId, "model", aiResponse);
+        memory.addMessage(chatId, "assistant", aiResponse);
         bot.getApi().sendMessage(chatId, aiResponse);
         std::cout << "[" << chatId << "] Бот: " << aiResponse << std::endl;
     });
 
     try {
-        std::cout << "Бот запущен! Ожидание сообщений..." << std::endl;
+        std::cout << "Бот запущен на базе Groq (LLaMA 3.3)! Ожидание сообщений..." << std::endl;
 
         TgBot::TgLongPoll longPoll(bot);
         while (true) {
