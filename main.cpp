@@ -190,7 +190,7 @@ std::string askGroq(const std::vector<Message>& conversation, const std::string&
     std::string url = "https://api.groq.com/openai/v1/chat/completions";
 
     json payload;
-    payload["model"] = "llama-3.3-70b-versatile";
+    payload["model"] = "openai/gpt-oss-20b";
 
     json messages = json::array();
 
