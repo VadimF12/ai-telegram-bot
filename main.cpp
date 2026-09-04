@@ -187,7 +187,7 @@ size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
 }
 
 std::string askGemini(const std::vector<Message>& conversation, const std::string& apiKey) {
-    std::vector<std::string> models = {"gemini-3.6-flash", "gemini-1.5-flash"};
+    std::vector<std::string> models = {"gemini-2.5-flash", "gemini-2.0-flash"};
 
     for (const auto& modelName : models) {
         std::string url = "https://generativelanguage.googleapis.com/v1beta/models/" + modelName + ":generateContent?key=" + apiKey;
