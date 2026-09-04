@@ -187,7 +187,6 @@ size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
 }
 
 std::string askGemini(const std::vector<Message>& conversation, const std::string& apiKey) {
-    // Список моделей: основная и резервная
     std::vector<std::string> models = {"gemini-3.6-flash", "gemini-1.5-flash"};
 
     for (const auto& modelName : models) {
@@ -240,10 +239,9 @@ std::string askGemini(const std::vector<Message>& conversation, const std::strin
 
                         std::cerr << "[Gemini Error on " << modelName << "]: " << readBuffer << std::endl;
 
-                        // Если уперлись в лимит (429), пробуем следующую модель из списка
                         if (errCode == 429 || errStatus == "RESOURCE_EXHAUSTED") {
                             std::cerr << "[Quota Exhausted] Переключаемся на резервную модель..." << std::endl;
-                            break; // выходим из цикла попыток и переходим к следующей модели
+                            break;
                         }
 
                         return "Ой, что-то голова раскалывается...";
@@ -268,7 +266,6 @@ std::string askGemini(const std::vector<Message>& conversation, const std::strin
         }
     }
 
-    // Если все модели уперлись в дневной лимит 429
     return "Слушай, я что-то устала немного, давай через минут десять списаемся?";
 }
 
@@ -294,12 +291,17 @@ int main() {
     TgBot::Bot bot(botToken);
     MemoryManager memory("bot_memory.db");
 
-    // Сбрасываем старые зависшие соединения при запуске:
+    // 1. Сбрасываем вебхуки и активные соединения Telegram
     try {
         bot.getApi().deleteWebhook(true);
+        std::cout << "[Telegram] Сброс вебхуков выполнен успешно." << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "Webhook reset warning: " << e.what() << std::endl;
     }
+
+    // 2. Обязательная задержка в 5 секунд для разрыва старой сессии на Render
+    std::cout << "[System] Пауза 5 секунд перед стартом поллинга..." << std::endl;
+    std::this_thread::sleep_for(std::chrono::seconds(5));
 
     bot.getEvents().onAnyMessage([&bot, &memory, &geminiApiKey](TgBot::Message::Ptr message) {
         int64_t chatId = message->chat->id;
@@ -324,7 +326,6 @@ int main() {
         bot.getApi().sendChatAction(chatId, "typing");
         memory.addMessage(chatId, "user", userText);
 
-        // Получаем ответ от Gemini
         std::string aiResponse = askGemini(memory.getHistory(chatId), geminiApiKey);
 
         memory.addMessage(chatId, "model", aiResponse);
