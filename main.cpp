@@ -187,80 +187,89 @@ size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
 }
 
 std::string askGemini(const std::vector<Message>& conversation, const std::string& apiKey) {
-    std::string url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=" + apiKey;
+    // Список моделей: основная и резервная
+    std::vector<std::string> models = {"gemini-3.6-flash", "gemini-1.5-flash"};
 
-    json payload;
-    payload["system_instruction"]["parts"] = json::array({ {{"text", SYSTEM_PROMPT}} });
+    for (const auto& modelName : models) {
+        std::string url = "https://generativelanguage.googleapis.com/v1beta/models/" + modelName + ":generateContent?key=" + apiKey;
 
-    json contents = json::array();
-    for (const auto& msg : conversation) {
-        json item;
-        item["role"] = msg.role;
-        item["parts"] = json::array({ {{"text", msg.text}} });
-        contents.push_back(item);
-    }
-    payload["contents"] = contents;
+        json payload;
+        payload["system_instruction"]["parts"] = json::array({ {{"text", SYSTEM_PROMPT}} });
 
-    std::string jsonStr = payload.dump();
+        json contents = json::array();
+        for (const auto& msg : conversation) {
+            json item;
+            item["role"] = msg.role;
+            item["parts"] = json::array({ {{"text", msg.text}} });
+            contents.push_back(item);
+        }
+        payload["contents"] = contents;
 
-    // Делаем до 3 попыток при сбое сети
-    int maxRetries = 3;
-    for (int attempt = 1; attempt <= maxRetries; ++attempt) {
-        CURL* curl = curl_easy_init();
-        if (!curl) continue;
+        std::string jsonStr = payload.dump();
 
-        std::string readBuffer;
-        struct curl_slist* headers = NULL;
-        headers = curl_slist_append(headers, "Content-Type: application/json");
+        int maxRetries = 2;
+        for (int attempt = 1; attempt <= maxRetries; ++attempt) {
+            CURL* curl = curl_easy_init();
+            if (!curl) continue;
 
-        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, jsonStr.c_str());
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+            std::string readBuffer;
+            struct curl_slist* headers = NULL;
+            headers = curl_slist_append(headers, "Content-Type: application/json");
 
-        // Увеличенные таймауты: 30 секунд на весь запрос, 10 секунд на подключение
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+            curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, jsonStr.c_str());
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
 
-        CURLcode res = curl_easy_perform(curl);
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+            curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
 
-        if (res == CURLE_OK) {
+            CURLcode res = curl_easy_perform(curl);
+
+            if (res == CURLE_OK) {
+                curl_slist_free_all(headers);
+                curl_easy_cleanup(curl);
+
+                try {
+                    auto responseJson = json::parse(readBuffer);
+
+                    if (responseJson.contains("error")) {
+                        int errCode = responseJson["error"].value("code", 0);
+                        std::string errStatus = responseJson["error"].value("status", "");
+
+                        std::cerr << "[Gemini Error on " << modelName << "]: " << readBuffer << std::endl;
+
+                        // Если уперлись в лимит (429), пробуем следующую модель из списка
+                        if (errCode == 429 || errStatus == "RESOURCE_EXHAUSTED") {
+                            std::cerr << "[Quota Exhausted] Переключаемся на резервную модель..." << std::endl;
+                            break; // выходим из цикла попыток и переходим к следующей модели
+                        }
+
+                        return "Ой, что-то голова раскалывается...";
+                    }
+
+                    if (responseJson.contains("candidates") &&
+                        !responseJson["candidates"].empty() &&
+                        responseJson["candidates"][0].contains("content") &&
+                        !responseJson["candidates"][0]["content"]["parts"].empty()) {
+
+                        return responseJson["candidates"][0]["content"]["parts"][0]["text"].get<std::string>();
+                    }
+                } catch (const std::exception& e) {
+                    std::cerr << "[JSON Parse Error]: " << e.what() << std::endl;
+                }
+                return "Ммм, задумалась что-то...";
+            }
+
             curl_slist_free_all(headers);
             curl_easy_cleanup(curl);
-
-            try {
-                auto responseJson = json::parse(readBuffer);
-
-                if (responseJson.contains("error")) {
-                    // Печатаем подробную ошибку в логи Render
-                    std::cerr << "[Gemini Raw Error Response]: " << readBuffer << std::endl;
-                    return "Ой, что-то голова раскалывается...";
-                }
-
-                if (responseJson.contains("candidates") &&
-                    !responseJson["candidates"].empty() &&
-                    responseJson["candidates"][0].contains("content") &&
-                    !responseJson["candidates"][0]["content"]["parts"].empty()) {
-
-                    return responseJson["candidates"][0]["content"]["parts"][0]["text"].get<std::string>();
-                    } else {
-                        std::cerr << "[Gemini Bad Structure]: " << readBuffer << std::endl;
-                    }
-            } catch (const std::exception& e) {
-                std::cerr << "[JSON Parse Error]: " << e.what() << " | Raw: " << readBuffer << std::endl;
-            }
-            return "Ммм, задумалась что-то...";
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
-
-        std::cerr << "[cURL Attempt " << attempt << " Failed]: " << curl_easy_strerror(res) << std::endl;
-        curl_slist_free_all(headers);
-        curl_easy_cleanup(curl);
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
 
-    return "Блин, инет лагает, не могу ответить...";
+    // Если все модели уперлись в дневной лимит 429
+    return "Слушай, я что-то устала немного, давай через минут десять списаемся?";
 }
 
 int main() {
