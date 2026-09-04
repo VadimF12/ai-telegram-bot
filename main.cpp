@@ -278,6 +278,13 @@ int main() {
     TgBot::Bot bot(botToken);
     MemoryManager memory("bot_memory.db");
 
+    // Сбрасываем старые зависшие соединения при запуске:
+    try {
+        bot.getApi().deleteWebhook(true);
+    } catch (const std::exception& e) {
+        std::cerr << "Webhook reset warning: " << e.what() << std::endl;
+    }
+
     bot.getEvents().onAnyMessage([&bot, &memory, &geminiApiKey](TgBot::Message::Ptr message) {
         int64_t chatId = message->chat->id;
         std::string userText = "";
