@@ -8,10 +8,13 @@
 #include <tgbot/tgbot.h>
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
 
 using json = nlohmann::json;
 
-// Простой фейковый HTTP-сервер для Health Check от Render
+// --- DUMMY HTTP SERVER DLYA RENDER HEALTH CHECK ---
 void startDummyHttpServer() {
     std::thread([]() {
         int server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -24,7 +27,6 @@ void startDummyHttpServer() {
         address.sin_family = AF_INET;
         address.sin_addr.s_addr = INADDR_ANY;
 
-        // Render передаёт порт через переменную окружения PORT
         const char* portStr = std::getenv("PORT");
         int port = portStr ? std::stoi(portStr) : 10000;
         address.sin_port = htons(port);
@@ -47,7 +49,6 @@ void startDummyHttpServer() {
                 char buffer[1024] = {0};
                 read(new_socket, buffer, sizeof(buffer) - 1);
 
-                // Отправляем полноценный HTTP 200 OK ответ
                 std::string response =
                     "HTTP/1.1 200 OK\r\n"
                     "Content-Type: text/plain\r\n"
@@ -62,7 +63,7 @@ void startDummyHttpServer() {
     }).detach();
 }
 
-// Системная инструкция (личность бота)
+// --- СИСТЕМНАЯ ИНСТРУКЦИЯ ---
 const std::string SYSTEM_PROMPT =
     "Ты — реальная девушка, общающаяся в Telegram. Тебя зовут Ай. "
     "Твой характер: ироничная, немного ленивая, но верная подруга. "
@@ -75,7 +76,7 @@ const std::string SYSTEM_PROMPT =
 
 // --- МЕНЕДЖЕР ПАМЯТИ ДИАЛОГОВ ---
 struct Message {
-    std::string role; // "user" или "model"
+    std::string role;
     std::string text;
 };
 
@@ -179,23 +180,16 @@ private:
     }
 };
 
-// --- HTTP КЛИЕНТ ДЛЯ GEMINI API ---
+// --- HTTP КЛИЕНТ DLYA GEMINI API С ПОВТОРАМИ И УВЕЛИЧЕННЫМ ТАЙМАУТОМ ---
 size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
     ((std::string*)userp)->append((char*)contents, size * nmemb);
     return size * nmemb;
 }
 
 std::string askGemini(const std::vector<Message>& conversation, const std::string& apiKey) {
-    CURL* curl = curl_easy_init();
-    std::string readBuffer;
-
-    if (!curl) return "Слушай, что-то связи нет...";
-
-    // Исправленный URL
     std::string url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=" + apiKey;
 
     json payload;
-
     payload["system_instruction"]["parts"] = json::array({ {{"text", SYSTEM_PROMPT}} });
 
     json contents = json::array();
@@ -209,52 +203,62 @@ std::string askGemini(const std::vector<Message>& conversation, const std::strin
 
     std::string jsonStr = payload.dump();
 
-    struct curl_slist* headers = NULL;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
+    // Делаем до 3 попыток при сбое сети
+    int maxRetries = 3;
+    for (int attempt = 1; attempt <= maxRetries; ++attempt) {
+        CURL* curl = curl_easy_init();
+        if (!curl) continue;
 
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, jsonStr.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+        std::string readBuffer;
+        struct curl_slist* headers = NULL;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
 
-    // Таймауты
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, jsonStr.c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
 
-    CURLcode res = curl_easy_perform(curl);
+        // Увеличенные таймауты: 30 секунд на весь запрос, 10 секунд на подключение
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
 
-    if (res != CURLE_OK) {
-        std::cerr << "[cURL Error] " << curl_easy_strerror(res) << std::endl;
+        CURLcode res = curl_easy_perform(curl);
+
+        if (res == CURLE_OK) {
+            curl_slist_free_all(headers);
+            curl_easy_cleanup(curl);
+
+            try {
+                auto responseJson = json::parse(readBuffer);
+
+                if (responseJson.contains("error")) {
+                    std::cerr << "[Gemini Error] " << responseJson["error"]["message"] << std::endl;
+                    return "Ой, что-то голова раскалывается...";
+                }
+
+                if (responseJson.contains("candidates") && !responseJson["candidates"].empty()) {
+                    return responseJson["candidates"][0]["content"]["parts"][0]["text"].get<std::string>();
+                }
+            } catch (...) {
+                std::cerr << "Ошибка парсинга JSON: " << readBuffer << std::endl;
+            }
+            return "Ммм, задумалась что-то...";
+        }
+
+        std::cerr << "[cURL Attempt " << attempt << " Failed]: " << curl_easy_strerror(res) << std::endl;
         curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
-        return "Блин, инет лагает, не могу ответить...";
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
 
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-
-    try {
-        auto responseJson = json::parse(readBuffer);
-
-        if (responseJson.contains("error")) {
-            std::cerr << "[Gemini Error] " << responseJson["error"]["message"] << std::endl;
-            return "Ой, что-то голова раскалывается...";
-        }
-
-        if (responseJson.contains("candidates") && !responseJson["candidates"].empty()) {
-            return responseJson["candidates"][0]["content"]["parts"][0]["text"].get<std::string>();
-        }
-    } catch (...) {
-        std::cerr << "Ошибка парсинга JSON: " << readBuffer << std::endl;
-    }
-    return "Ммм, задумалась что-то...";
+    return "Блин, инет лагает, не могу ответить...";
 }
 
 int main() {
-    startDummyHttpServer(); // Запускаем фоновый ответчик на порт Render
+    startDummyHttpServer();
 
-    // 1. Считывание ключей из переменных окружения
     const char* tgTokenEnv = std::getenv("TELEGRAM_BOT_TOKEN");
     if (!tgTokenEnv) {
         std::cerr << "Ошибка: Переменная окружения TELEGRAM_BOT_TOKEN не задана!" << std::endl;
@@ -297,9 +301,8 @@ int main() {
         bot.getApi().sendChatAction(chatId, "typing");
         memory.addMessage(chatId, "user", userText);
 
+        // Получаем ответ от Gemini
         std::string aiResponse = askGemini(memory.getHistory(chatId), geminiApiKey);
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
 
         memory.addMessage(chatId, "model", aiResponse);
         bot.getApi().sendMessage(chatId, aiResponse);
