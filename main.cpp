@@ -233,15 +233,22 @@ std::string askGemini(const std::vector<Message>& conversation, const std::strin
                 auto responseJson = json::parse(readBuffer);
 
                 if (responseJson.contains("error")) {
-                    std::cerr << "[Gemini Error] " << responseJson["error"]["message"] << std::endl;
+                    // Печатаем подробную ошибку в логи Render
+                    std::cerr << "[Gemini Raw Error Response]: " << readBuffer << std::endl;
                     return "Ой, что-то голова раскалывается...";
                 }
 
-                if (responseJson.contains("candidates") && !responseJson["candidates"].empty()) {
+                if (responseJson.contains("candidates") &&
+                    !responseJson["candidates"].empty() &&
+                    responseJson["candidates"][0].contains("content") &&
+                    !responseJson["candidates"][0]["content"]["parts"].empty()) {
+
                     return responseJson["candidates"][0]["content"]["parts"][0]["text"].get<std::string>();
-                }
-            } catch (...) {
-                std::cerr << "Ошибка парсинга JSON: " << readBuffer << std::endl;
+                    } else {
+                        std::cerr << "[Gemini Bad Structure]: " << readBuffer << std::endl;
+                    }
+            } catch (const std::exception& e) {
+                std::cerr << "[JSON Parse Error]: " << e.what() << " | Raw: " << readBuffer << std::endl;
             }
             return "Ммм, задумалась что-то...";
         }
